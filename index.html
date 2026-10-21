@@ -44,7 +44,13 @@
       user-select: none;
     }
 
-    /* Hide Google Maps keyless developer watermark/modal overlays automatically */
+    /* Hide Google Maps keyless developer watermark/modal overlays automatically
+       and counter-invert the WebGL canvas so keyless Street View displays 100% natural colors! */
+    #gmap-pano canvas,
+    .widget-scene-canvas {
+      filter: invert(1) !important;
+    }
+
     .gm-err-container,
     .gm-style-pbc,
     div[style*="background-color: rgba(0, 0, 0, 0.5)"] {
@@ -1180,10 +1186,25 @@
     let gmapGeocoder = null;
     let lastGmapStepAdvance = 0;
 
-    // Auto-dismiss any Google Maps "For development purposes only" dialog button
+    // Auto-dismiss any Google Maps "For development purposes only" dialog button & watermark text
     const watermarkObserver = new MutationObserver(() => {
       const dismissBtns = document.querySelectorAll('.dismissButton');
       dismissBtns.forEach((btn) => btn.click());
+
+      if (gmapPanoEl) {
+        gmapPanoEl.querySelectorAll('div, span').forEach((el) => {
+          if (
+            el.children.length === 0 &&
+            (el.textContent.includes('For development purposes only') ||
+             el.textContent.includes('僅供開發'))
+          ) {
+            el.style.display = 'none';
+            if (el.parentElement && el.parentElement !== gmapPanoEl) {
+              el.parentElement.style.background = 'transparent';
+            }
+          }
+        });
+      }
     });
     watermarkObserver.observe(document.body, { childList: true, subtree: true });
 
