@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>體感街景漫步 - Google 登入・自訂地點・手機與電腦通用</title>
+  <!-- Google Identity Services (Sign in with Google) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <!-- MediaPipe Pose & Drawing Utils -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <!-- Three.js for Keyless 3D Street Simulation Mode -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" crossorigin="anonymous"></script>
+
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --panel-bg: rgba(15, 23, 42, 0.88);
+      --accent: #38bdf8;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+      background: var(--bg-dark);
+      color: var(--text);
+      overflow: hidden;
+      height: 100dvh;
+      width: 100vw;
+      user-select: none;
+    }
+
+    /* =========================================================
+     * 1. GOOGLE LOGIN OVERLAY GATE
+     * ========================================================= */
+    #auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .auth-card {
+      width: 100%;
+      max-width: 430px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      padding: 28px 24px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .auth-title {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--text);
+    }
+
+    .auth-desc {
+      font-size: 0.88rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .auth-box {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      text-align: left;
+    }
+
+    .auth-box label {
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      font-weight: 600;
+    }
+
+    #g-signin-btn-container {
+      display: flex;
+      justify-content: center;
+      min-height: 44px;
+      align-items: center;
+    }
+
+    /* =========================================================
+     * 2. MAIN VIEWPORT & HUD
+     * ========================================================= */
+    #viewport-container {
+      position: relative;
+      width: 100vw;
+      height: 100dvh;
+    }
+
+    #sim-canvas, #gmap-pano {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #gmap-pano {
+      display: none;
+    }
+
+    .top-bar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+      z-index: 20;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .hud-card {
+      background: var(--panel-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      padding: 12px 16px;
+      pointer-events: auto;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45);
+    }
+
+    .brand-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .brand-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .user-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    .user-chip img {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.76rem;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--muted);
+    }
+
+    .status-badge.active {
+      background: rgba(34, 197, 94, 0.2);
+      color: #4ade80;
+      border: 1px solid rgba(34, 197, 94, 0.4);
+    }
+
+    .status-badge.walking {
+      background: rgba(56, 189, 248, 0.25);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.5);
+    }
+
+    .status-badge.warn {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    /* Location Search Bar inside Top HUD */
+    .location-search-bar {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+      align-items: center;
+    }
+
+    .location-search-bar input {
+      flex: 1;
+      min-width: 160px;
+    }
+
+    .stats-row {
+      display: flex;
+      gap: 16px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+
+    .stat-box {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-label {
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .stat-value {
+      font-size: 1.2rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+
+    .stat-value span {
+      font-size: 0.75rem;
+      font-weight: 400;
+      color: var(--muted);
+      margin-left: 2px;
+    }
+
+    /* Center Action Feedback Pills */
+    #action-banner {
+      position: absolute;
+      top: 155px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 15;
+      display: flex;
+      gap: 8px;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .pill-indicator {
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--muted);
+      transition: all 0.15s ease;
+      backdrop-filter: blur(8px);
+    }
+
+    .pill-indicator.on-turn {
+      background: rgba(245, 158, 11, 0.28);
+      border-color: var(--amber);
+      color: #fde68a;
+      transform: scale(1.05);
+    }
+
+    .pill-indicator.on-walk {
+      background: rgba(34, 197, 94, 0.32);
+      border-color: var(--green);
+      color: #bbf7d0;
+      transform: scale(1.07);
+    }
+
+    /* Bottom Right Webcam & Motion Gauges */
+    .cam-panel {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      width: 320px;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: transform 0.25s ease, width 0.25s ease;
+    }
+
+    .video-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #020617;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    #input-video {
+      display: none;
+    }
+
+    #pose-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    .cam-overlay-tip {
+      position: absolute;
+      bottom: 4px;
+      left: 6px;
+      right: 6px;
+      font-size: 0.68rem;
+      color: #e2e8f0;
+      background: rgba(15, 23, 42, 0.75);
+      padding: 3px 6px;
+      border-radius: 5px;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    .gauge-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .gauge-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .gauge-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    .gauge-track {
+      position: relative;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .gauge-deadzone {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      border-left: 1px dashed rgba(255, 255, 255, 0.4);
+      border-right: 1px dashed rgba(255, 255, 255, 0.4);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .gauge-dot {
+      position: absolute;
+      top: 1px;
+      bottom: 1px;
+      width: 9px;
+      border-radius: 999px;
+      background: var(--accent);
+      transform: translateX(-50%);
+      transition: left 0.05s linear, background 0.15s ease;
+    }
+
+    /* Bottom Left Controls & Settings Drawer */
+    #btn-toggle-settings {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      z-index: 25;
+      display: none;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: var(--panel-bg);
+      border: 1px solid rgba(56, 189, 248, 0.5);
+      color: #bae6fd;
+      font-weight: 700;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    }
+
+    .controls-panel {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      width: 340px;
+      z-index: 22;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: calc(100dvh - 190px);
+      overflow-y: auto;
+      transition: transform 0.25s ease, opacity 0.25s ease;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .control-group label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      color: #cbd5e1;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    button, select, input[type="text"], input[type="password"] {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: var(--text);
+      padding: 7px 11px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      outline: none;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+
+    button:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    button.primary {
+      background: rgba(56, 189, 248, 0.25);
+      border-color: rgba(56, 189, 248, 0.5);
+      color: #bae6fd;
+    }
+
+    button.primary:hover {
+      background: rgba(56, 189, 248, 0.38);
+    }
+
+    .api-box {
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .hint-text {
+      font-size: 0.74rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    /* =========================================================
+     * 3. MOBILE RESPONSIVE STYLES (Phones & Vertical Screens)
+     * ========================================================= */
+    @media (max-width: 768px) {
+      .top-bar {
+        top: 8px;
+        left: 8px;
+        right: 8px;
+      }
+
+      .top-bar .hud-card {
+        width: 100%;
+        padding: 10px 12px;
+      }
+
+      .stat-value {
+        font-size: 1.05rem;
+      }
+
+      #action-banner {
+        top: auto;
+        bottom: 195px;
+      }
+
+      .pill-indicator {
+        font-size: 0.75rem;
+        padding: 5px 10px;
+      }
+
+      /* Compact Picture-in-Picture Camera on Mobile */
+      .cam-panel {
+        width: 165px;
+        padding: 8px;
+        bottom: 10px;
+        right: 10px;
+      }
+
+      .cam-overlay-tip {
+        display: none;
+      }
+
+      .gauge-header span:first-child,
+      .gauge-header span:last-child {
+        display: none;
+      }
+
+      .gauge-header {
+        justify-content: center;
+        font-size: 0.68rem;
+      }
+
+      /* Collapsible Settings Drawer on Mobile */
+      #btn-toggle-settings {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .controls-panel {
+        left: 10px;
+        right: 10px;
+        bottom: 58px;
+        width: auto;
+        max-height: 60dvh;
+      }
+
+      .controls-panel.mobile-hidden {
+        transform: translateY(120%);
+        opacity: 0;
+        pointer-events: none;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- =========================================================
+       STEP 1: GOOGLE SIGN-IN OVERLAY GATE
+       ========================================================= -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <div style="font-size: 2.4rem;">🌏🏃‍♂️</div>
+      <div class="auth-title">體感街景漫步</div>
+      <div class="auth-desc">
+        本系統需要登入 <b>Google 帳號</b> 才能開始使用。<br/>
+        支援手機與電腦前置鏡頭，腰部擺手前進、轉頭控制方向。
+      </div>
+
+      <!-- Official Google Sign-In Container -->
+      <div class="auth-box">
+        <label>🔐 Google OAuth Client ID (正式 Google 登入)</label>
+        <div class="btn-row">
+          <input type="text" id="oauth-client-id" placeholder="貼上 xxx.apps.googleusercontent.com" style="flex:1;" />
+          <button id="btn-apply-client-id" class="primary">套用</button>
+        </div>
+        <div id="g-signin-btn-container">
+          <span class="hint-text">輸入 Google OAuth Client ID 後將顯示官方登入按鈕</span>
+        </div>
+      </div>
+
+      <div class="auth-box">
+        <label>⚡ 尚未申請 OAuth Client ID？</label>
+        <div class="hint-text">
+          若你目前還在測試階段，可先輸入你的 Google Email 登入體驗：
+        </div>
+        <div class="btn-row">
+          <input type="text" id="quick-google-email" placeholder="輸入你的 @gmail.com 帳號..." style="flex:1;" />
+          <button id="btn-quick-login" class="primary">登入進入</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       STEP 2: MAIN VIEWPORT & INTERACTIVE HUD
+       ========================================================= -->
+  <div id="viewport-container">
+    <canvas id="sim-canvas"></canvas>
+    <div id="gmap-pano"></div>
+
+    <!-- Top Bar: Status + User Account + Custom Location Input -->
+    <div class="top-bar">
+      <div class="hud-card" style="flex: 1; max-width: 680px;">
+        <div class="brand-header">
+          <div class="brand-title">
+            <span>🏃‍♂️ 體感街景</span>
+            <span id="cam-status" class="status-badge">等待登入啟動...</span>
+            <span id="waist-status" class="status-badge">雙手置於腰部框</span>
+            <span id="rhythm-status" class="status-badge">等待擺手</span>
+          </div>
+
+          <!-- Logged-in Google User Info -->
+          <div id="user-profile-chip" class="user-chip" style="display: none;">
+            <img id="user-avatar" src="" alt="avatar" style="display:none;" />
+            <span id="user-name-label">Google 使用者</span>
+            <button id="btn-logout" style="padding: 2px 7px; font-size: 0.7rem;">登出</button>
+          </div>
+        </div>
+
+        <!-- Custom Location Search Box -->
+        <div class="location-search-bar">
+          <input
+            type="text"
+            id="location-input"
+            placeholder="📍 輸入任意地點或地址（例：九份老街、東京鐵塔、日月潭、巴黎...）"
+          />
+          <button id="btn-search-location" class="primary">前往地點</button>
+          <span id="location-status" class="hint-text" style="white-space: nowrap;">目前：模擬城市</span>
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-box">
+            <span class="stat-label">累積步數</span>
+            <span class="stat-value"><strong id="step-count">0</strong><span>步</span></span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">擺手步頻</span>
+            <span class="stat-value"><strong id="spm-value">0</strong><span>次/分</span></span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">前進距離</span>
+            <span class="stat-value"><strong id="dist-value">0</strong><span>m</span></span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">視角方向</span>
+            <span class="stat-value"><strong id="heading-value">0</strong><span>°</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Action Feedback Pills -->
+    <div id="action-banner">
+      <div id="pill-left" class="pill-indicator">⬅️ 左轉</div>
+      <div id="pill-walk" class="pill-indicator">⬆️ 擺手前進</div>
+      <div id="pill-right" class="pill-indicator">右轉 ➡️</div>
+    </div>
+
+    <!-- Mobile Settings Drawer Toggle Button -->
+    <button id="btn-toggle-settings">⚙️ 設定與金鑰</button>
+
+    <!-- Left Panel: Sensitivity & Google Street View API Key -->
+    <div id="settings-drawer" class="hud-card controls-panel mobile-hidden">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-weight: 700; font-size: 0.9rem;">⚙️ 體感靈敏度與街景設定</span>
+        <button id="btn-switch-cam" style="padding: 4px 8px; font-size: 0.74rem;">🔄 切換前後鏡頭</button>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <span>移動模式</span>
+          <span id="move-style-label" style="color: var(--accent);">街景節點跳躍</span>
+        </label>
+        <div class="btn-row">
+          <button id="btn-mode-step" class="primary" style="flex:1;">街景節點前進</button>
+          <button id="btn-mode-smooth" style="flex:1;">平滑連續前進</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <span>腰部擺手觸發門檻 (越小越靈敏)</span>
+          <span id="val-sway-thresh">0.08</span>
+        </label>
+        <input type="range" id="slider-sway-thresh" min="0.02" max="0.25" step="0.01" value="0.08" />
+      </div>
+
+      <div class="control-group">
+        <label>
+          <span>轉頭觸發死區 (越小越容易轉彎)</span>
+          <span id="val-turn-thresh">0.22</span>
+        </label>
+        <input type="range" id="slider-turn-thresh" min="0.08" max="0.50" step="0.02" value="0.22" />
+      </div>
+
+      <div class="control-group">
+        <label>
+          <span>轉頭旋轉速度</span>
+          <span id="val-turn-speed">1.6°/幀</span>
+        </label>
+        <input type="range" id="slider-turn-speed" min="0.5" max="4.0" step="0.1" value="1.6" />
+      </div>
+
+      <div class="api-box">
+        <div style="font-weight: 600; font-size: 0.82rem;">🗺️ Google Maps API Key (真實街景)</div>
+        <div class="btn-row">
+          <input type="password" id="gmap-api-key" placeholder="貼上 Google Maps API Key..." style="flex: 1;" />
+          <button id="btn-load-gmap" class="primary">載入真實街景</button>
+        </div>
+        <div class="btn-row" style="margin-top: 4px;">
+          <button class="preset-loc-btn" data-query="台北 101" data-lat="25.0339" data-lng="121.5623">台北 101</button>
+          <button class="preset-loc-btn" data-query="九份老街" data-lat="25.1099" data-lng="121.8452">九份老街</button>
+          <button class="preset-loc-btn" data-query="東京澀谷" data-lat="35.6595" data-lng="139.7004">東京澀谷</button>
+          <button class="preset-loc-btn" data-query="巴黎鐵塔" data-lat="48.8584" data-lng="2.2945">巴黎鐵塔</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Webcam Skeleton & Live Gauges -->
+    <div class="hud-card cam-panel">
+      <div class="video-wrap">
+        <video id="input-video" playsinline muted autoplay></video>
+        <canvas id="pose-canvas" width="480" height="360"></canvas>
+        <div class="cam-overlay-tip">綠框＝腰部偵測區（雙手在綠框內擺動前進）</div>
+      </div>
+
+      <div class="gauge-section">
+        <div class="gauge-row">
+          <div class="gauge-header">
+            <span>👈 左轉</span>
+            <span id="yaw-debug">轉頭置中</span>
+            <span>右轉 👉</span>
+          </div>
+          <div class="gauge-track">
+            <div id="yaw-deadzone-bar" class="gauge-deadzone" style="left: 34%; right: 34%;"></div>
+            <div id="yaw-dot" class="gauge-dot" style="left: 50%;"></div>
+          </div>
+        </div>
+
+        <div class="gauge-row">
+          <div class="gauge-header">
+            <span>左手 🤚</span>
+            <span id="sway-debug">腰部擺手</span>
+            <span>✋ 右手</span>
+          </div>
+          <div class="gauge-track">
+            <div id="sway-deadzone-bar" class="gauge-deadzone" style="left: 36%; right: 36%;"></div>
+            <div id="sway-dot" class="gauge-dot" style="left: 50%;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /*****************************************************************
+     * 1. STATE & CONFIGURATION
+     *****************************************************************/
+    const state = {
+      loggedInUser: null,
+      cameraStarted: false,
+      facingMode: 'user',   // 'user' (front selfie cam) or 'environment'
+
+      heading: 0,
+      distance: 0,
+      stepCount: 0,
+      spm: 0,
+      moveStyle: 'step',
+      usingGoogleMaps: false,
+
+      handSwingThreshold: 0.08,
+      turnThreshold: 0.22,
+      turnSpeed: 1.6,
+
+      smoothedYaw: 0,
+      turnDirection: 0,
+
+      handsInWaistZone: false,
+      leftHandBaseY: null,
+      rightHandBaseY: null,
+      leftHandBaseX: null,
+      rightHandBaseX: null,
+      smoothedSwingSignal: 0,
+      lastSwingPhase: 0,
+      stepTimestamps: [],
+      rhythmLocked: false,
+      lastStepTime: 0,
+      forwardVelocity: 0
+    };
+
+    // UI Elements
+    const authOverlay = document.getElementById('auth-overlay');
+    const userProfileChip = document.getElementById('user-profile-chip');
+    const userAvatar = document.getElementById('user-avatar');
+    const userNameLabel = document.getElementById('user-name-label');
+
+    const elCamStatus = document.getElementById('cam-status');
+    const elWaistStatus = document.getElementById('waist-status');
+    const elRhythmStatus = document.getElementById('rhythm-status');
+    const elStepCount = document.getElementById('step-count');
+    const elSpmValue = document.getElementById('spm-value');
+    const elDistValue = document.getElementById('dist-value');
+    const elHeadingValue = document.getElementById('heading-value');
+    const elLocationStatus = document.getElementById('location-status');
+
+    const pillLeft = document.getElementById('pill-left');
+    const pillWalk = document.getElementById('pill-walk');
+    const pillRight = document.getElementById('pill-right');
+
+    const yawDot = document.getElementById('yaw-dot');
+    const yawDeadzoneBar = document.getElementById('yaw-deadzone-bar');
+    const yawDebug = document.getElementById('yaw-debug');
+
+    const swayDot = document.getElementById('sway-dot');
+    const swayDeadzoneBar = document.getElementById('sway-deadzone-bar');
+    const swayDebug = document.getElementById('sway-debug');
+
+    /*****************************************************************
+     * 2. GOOGLE ACCOUNT SIGN-IN GATE
+     *****************************************************************/
+    function decodeJwtPayload(token) {
+      try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+          atob(base64)
+            .split('')
+            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join('')
+        );
+        return JSON.parse(jsonPayload);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function completeLogin(userObj) {
+      state.loggedInUser = userObj;
+      localStorage.setItem('STREETVIEW_FIT_USER', JSON.stringify(userObj));
+      authOverlay.style.display = 'none';
+      userProfileChip.style.display = 'inline-flex';
+      userNameLabel.textContent = userObj.name || userObj.email;
+      if (userObj.picture) {
+        userAvatar.src = userObj.picture;
+        userAvatar.style.display = 'block';
+      } else {
+        userAvatar.style.display = 'none';
+      }
+      startWebcamDetection();
+    }
+
+    window.handleGoogleCredentialResponse = (response) => {
+      const payload = decodeJwtPayload(response.credential);
+      if (payload && payload.email) {
+        completeLogin({
+          name: payload.name || payload.email,
+          email: payload.email,
+          picture: payload.picture || ''
+        });
+      }
+    };
+
+    function initGoogleSignInButton(clientId) {
+      if (!clientId || !window.google || !google.accounts || !google.accounts.id) return;
+      localStorage.setItem('GOOGLE_OAUTH_CLIENT_ID', clientId);
+      const container = document.getElementById('g-signin-btn-container');
+      container.innerHTML = '';
+      google.accounts.id.initialize({
+        client_id: clientId,
+        callback: window.handleGoogleCredentialResponse
+      });
+      google.accounts.id.renderButton(container, {
+        theme: 'filled_blue',
+        size: 'large',
+        text: 'signin_with',
+        shape: 'pill',
+        locale: 'zh_TW'
+      });
+    }
+
+    document.getElementById('btn-apply-client-id').addEventListener('click', () => {
+      const cid = document.getElementById('oauth-client-id').value.trim();
+      if (cid) initGoogleSignInButton(cid);
+    });
+
+    document.getElementById('btn-quick-login').addEventListener('click', () => {
+      const email = document.getElementById('quick-google-email').value.trim();
+      if (!email || !email.includes('@')) {
+        alert('請輸入有效的 Google Email 帳號（例如 example@gmail.com）');
+        return;
+      }
+      completeLogin({ name: email.split('@')[0], email, picture: '' });
+    });
+
+    document.getElementById('btn-logout').addEventListener('click', () => {
+      localStorage.removeItem('STREETVIEW_FIT_USER');
+      state.loggedInUser = null;
+      authOverlay.style.display = 'flex';
+    });
+
+    // Restore saved OAuth Client ID & saved user session if available
+    window.addEventListener('load', () => {
+      const savedClientId = localStorage.getItem('GOOGLE_OAUTH_CLIENT_ID');
+      if (savedClientId) {
+        document.getElementById('oauth-client-id').value = savedClientId;
+        setTimeout(() => initGoogleSignInButton(savedClientId), 500);
+      }
+
+      const savedGmapKey = localStorage.getItem('GMAP_STREETVIEW_KEY');
+      if (savedGmapKey) {
+        document.getElementById('gmap-api-key').value = savedGmapKey;
+      }
+
+      const savedUser = localStorage.getItem('STREETVIEW_FIT_USER');
+      if (savedUser) {
+        try {
+          completeLogin(JSON.parse(savedUser));
+        } catch (e) {}
+      }
+    });
+
+    /*****************************************************************
+     * 3. MOBILE DRAWER & CONTROLS BINDING
+     *****************************************************************/
+    const settingsDrawer = document.getElementById('settings-drawer');
+    const btnToggleSettings = document.getElementById('btn-toggle-settings');
+
+    btnToggleSettings.addEventListener('click', () => {
+      settingsDrawer.classList.toggle('mobile-hidden');
+      btnToggleSettings.textContent = settingsDrawer.classList.contains('mobile-hidden')
+        ? '⚙️ 設定與金鑰'
+        : '✖️ 收起設定';
+    });
+
+    const sliderSway = document.getElementById('slider-sway-thresh');
+    const sliderTurn = document.getElementById('slider-turn-thresh');
+    const sliderSpeed = document.getElementById('slider-turn-speed');
+
+    function updateDeadzoneVisuals() {
+      const yawPct = Math.min(45, (state.turnThreshold / 0.7) * 50);
+      yawDeadzoneBar.style.left = `${50 - yawPct}%`;
+      yawDeadzoneBar.style.right = `${50 - yawPct}%`;
+
+      const swayPct = Math.min(45, (state.handSwingThreshold / 0.35) * 50);
+      swayDeadzoneBar.style.left = `${50 - swayPct}%`;
+      swayDeadzoneBar.style.right = `${50 - swayPct}%`;
+    }
+
+    sliderSway.addEventListener('input', (e) => {
+      state.handSwingThreshold = parseFloat(e.target.value);
+      document.getElementById('val-sway-thresh').textContent = state.handSwingThreshold.toFixed(2);
+      updateDeadzoneVisuals();
+    });
+
+    sliderTurn.addEventListener('input', (e) => {
+      state.turnThreshold = parseFloat(e.target.value);
+      document.getElementById('val-turn-thresh').textContent = state.turnThreshold.toFixed(2);
+      updateDeadzoneVisuals();
+    });
+
+    sliderSpeed.addEventListener('input', (e) => {
+      state.turnSpeed = parseFloat(e.target.value);
+      document.getElementById('val-turn-speed').textContent = `${state.turnSpeed.toFixed(1)}°/幀`;
+    });
+
+    const btnModeStep = document.getElementById('btn-mode-step');
+    const btnModeSmooth = document.getElementById('btn-mode-smooth');
+    const moveStyleLabel = document.getElementById('move-style-label');
+
+    btnModeStep.addEventListener('click', () => {
+      state.moveStyle = 'step';
+      btnModeStep.classList.add('primary');
+      btnModeSmooth.classList.remove('primary');
+      moveStyleLabel.textContent = '街景節點跳躍';
+    });
+
+    btnModeSmooth.addEventListener('click', () => {
+      state.moveStyle = 'smooth';
+      btnModeSmooth.classList.add('primary');
+      btnModeStep.classList.remove('primary');
+      moveStyleLabel.textContent = '平滑連續推進';
+    });
+
+    updateDeadzoneVisuals();
+
+    /*****************************************************************
+     * 4. KEYLESS 3D STREET VIEW SIMULATION (THREE.JS)
+     *****************************************************************/
+    const simCanvas = document.getElementById('sim-canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas: simCanvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1e293b);
+    scene.fog = new THREE.FogExp2(0x1e293b, 0.0065);
+
+    const camera3D = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.1, 400);
+    camera3D.position.set(0, 1.7, 0);
+    const targetCamPos = new THREE.Vector3(0, 1.7, 0);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xfffbeb, 0.9);
+    dirLight.position.set(40, 80, 30);
+    scene.add(dirLight);
+
+    function buildProceduralCity() {
+      const groundGeo = new THREE.PlaneGeometry(1200, 1200);
+      const groundMat = new THREE.MeshLambertMaterial({ color: 0x1e242b });
+      const ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI / 2;
+      scene.add(ground);
+
+      const blockSize = 40;
+      const roadWidth = 12;
+      const gridRange = 8;
+
+      const stripeGeo = new THREE.PlaneGeometry(0.3, 3.5);
+      const stripeMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
+      const nodeRingGeo = new THREE.RingGeometry(0.6, 0.85, 24);
+      const nodeRingMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.45
+      });
+
+      const buildingPalette = [0x334155, 0x475569, 0x1e3a8a, 0x0f766e, 0x374151, 0x52525b];
+      const trunkMat = new THREE.MeshLambertMaterial({ color: 0x5c4033 });
+      const leafMat = new THREE.MeshLambertMaterial({ color: 0x15803d });
+
+      for (let gx = -gridRange; gx <= gridRange; gx++) {
+        for (let gz = -gridRange; gz <= gridRange; gz++) {
+          const centerX = gx * blockSize;
+          const centerZ = gz * blockSize;
+
+          for (let step = -2; step <= 2; step++) {
+            const ring1 = new THREE.Mesh(nodeRingGeo, nodeRingMat);
+            ring1.rotation.x = -Math.PI / 2;
+            ring1.position.set(centerX, 0.03, centerZ + step * 8);
+            scene.add(ring1);
+
+            const stripe1 = new THREE.Mesh(stripeGeo, stripeMat);
+            stripe1.rotation.x = -Math.PI / 2;
+            stripe1.position.set(centerX, 0.02, centerZ + step * 8 + 4);
+            scene.add(stripe1);
+          }
+
+          const blockCenterX = centerX + blockSize / 2;
+          const blockCenterZ = centerZ + blockSize / 2;
+          const sidewalkSize = blockSize - roadWidth;
+
+          const swGeo = new THREE.BoxGeometry(sidewalkSize, 0.2, sidewalkSize);
+          const swMat = new THREE.MeshLambertMaterial({ color: 0x64748b });
+          const sidewalk = new THREE.Mesh(swGeo, swMat);
+          sidewalk.position.set(blockCenterX, 0.1, blockCenterZ);
+          scene.add(sidewalk);
+
+          const bWidth = sidewalkSize - 6;
+          const bDepth = sidewalkSize - 6;
+          const bHeight = 10 + Math.abs(Math.sin(gx * 12.9898 + gz * 78.233)) * 28;
+          const bColor = buildingPalette[Math.abs(gx * 3 + gz * 7) % buildingPalette.length];
+
+          const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
+          const bMat = new THREE.MeshLambertMaterial({ color: bColor });
+          const building = new THREE.Mesh(bGeo, bMat);
+          building.position.set(blockCenterX, bHeight / 2 + 0.2, blockCenterZ);
+          scene.add(building);
+
+          const treeOffsets = [
+            [-sidewalkSize / 2 + 1.5, -sidewalkSize / 2 + 1.5],
+            [sidewalkSize / 2 - 1.5, -sidewalkSize / 2 + 1.5],
+            [-sidewalkSize / 2 + 1.5, sidewalkSize / 2 - 1.5],
+            [sidewalkSize / 2 - 1.5, sidewalkSize / 2 - 1.5]
+          ];
+          treeOffsets.forEach(([ox, oz]) => {
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 2.2, 8), trunkMat);
+            trunk.position.set(blockCenterX + ox, 1.1, blockCenterZ + oz);
+            scene.add(trunk);
+
+            const foliage = new THREE.Mesh(new THREE.SphereGeometry(1.3, 10, 10), leafMat);
+            foliage.position.set(blockCenterX + ox, 3.0, blockCenterZ + oz);
+            scene.add(foliage);
+          });
+        }
+      }
+    }
+
+    buildProceduralCity();
+
+    window.addEventListener('resize', () => {
+      camera3D.aspect = window.innerWidth / window.innerHeight;
+      camera3D.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    /*****************************************************************
+     * 5. CUSTOM LOCATION SEARCH & GOOGLE STREET VIEW INTEGRATION
+     *****************************************************************/
+    let gmapPanorama = null;
+    let gmapStreetViewService = null;
+    let gmapGeocoder = null;
+    let lastGmapStepAdvance = 0;
+
+    function teleportToCoordinates(lat, lng, labelName) {
+      elLocationStatus.textContent = `📍 ${labelName} (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+
+      if (state.usingGoogleMaps && gmapPanorama && gmapStreetViewService) {
+        // Find the nearest valid Street View road panorama within 300m radius
+        gmapStreetViewService.getPanorama(
+          { location: { lat, lng }, radius: 300, source: google.maps.StreetViewSource.OUTDOOR },
+          (data, status) => {
+            if (status === 'OK' && data && data.location) {
+              gmapPanorama.setPano(data.location.pano);
+            } else {
+              // Fallback direct setPosition
+              gmapPanorama.setPosition({ lat, lng });
+            }
+          }
+        );
+      } else {
+        // In 3D simulation mode: reset to intersection & change sky ambiance by latitude/longitude hash
+        targetCamPos.set(0, 1.7, 0);
+        camera3D.position.set(0, 1.7, 0);
+        const skyColors = [0x1e293b, 0x0f172a, 0x1e3a5f, 0x312e81, 0x134e4a];
+        const idx = Math.abs(Math.round((lat + lng) * 100)) % skyColors.length;
+        scene.background = new THREE.Color(skyColors[idx]);
+        scene.fog = new THREE.FogExp2(skyColors[idx], 0.0065);
+      }
+    }
+
+    async function searchAndGoToLocation(queryText) {
+      const q = queryText.trim();
+      if (!q) return;
+      elLocationStatus.textContent = `🔍 搜尋「${q}」中...`;
+
+      // Check if user entered raw "lat, lng"
+      const coordMatch = q.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
+      if (coordMatch) {
+        const lat = parseFloat(coordMatch[1]);
+        const lng = parseFloat(coordMatch[3]);
+        teleportToCoordinates(lat, lng, q);
+        return;
+      }
+
+      // 1. If Google Maps Geocoder is available, use it first
+      if (state.usingGoogleMaps && gmapGeocoder) {
+        gmapGeocoder.geocode({ address: q }, (results, status) => {
+          if (status === 'OK' && results[0]) {
+            const loc = results[0].geometry.location;
+            teleportToCoordinates(loc.lat(), loc.lng(), q);
+          } else {
+            fallbackNominatimSearch(q);
+          }
+        });
+        return;
+      }
+
+      // 2. Otherwise use free OpenStreetMap Nominatim Geocoding API
+      await fallbackNominatimSearch(q);
+    }
+
+    async function fallbackNominatimSearch(q) {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+        const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW,zh;q=0.9' } });
+        const data = await res.json();
+        if (data && data.length > 0) {
+          const lat = parseFloat(data[0].lat);
+          const lng = parseFloat(data[0].lon);
+          const shortName = data[0].display_name.split(',')[0] || q;
+          teleportToCoordinates(lat, lng, shortName);
+        } else {
+          elLocationStatus.textContent = `⚠️ 找不到「${q}」，請換個關鍵字`;
+        }
+      } catch (err) {
+        elLocationStatus.textContent = `⚠️ 搜尋連線失敗`;
+      }
+    }
+
+    document.getElementById('btn-search-location').addEventListener('click', () => {
+      const q = document.getElementById('location-input').value;
+      searchAndGoToLocation(q);
+    });
+
+    document.getElementById('location-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        searchAndGoToLocation(e.target.value);
+      }
+    });
+
+    document.querySelectorAll('.preset-loc-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const name = btn.getAttribute('data-query');
+        const lat = parseFloat(btn.getAttribute('data-lat'));
+        const lng = parseFloat(btn.getAttribute('data-lng'));
+        document.getElementById('location-input').value = name;
+        teleportToCoordinates(lat, lng, name);
+      });
+    });
+
+    function loadGoogleMapsStreetView(apiKey, lat = 25.0339, lng = 121.5623) {
+      if (!apiKey) return;
+      localStorage.setItem('GMAP_STREETVIEW_KEY', apiKey);
+
+      window.initStreetViewPano = () => {
+        const panoEl = document.getElementById('gmap-pano');
+        panoEl.style.display = 'block';
+        simCanvas.style.display = 'none';
+        state.usingGoogleMaps = true;
+
+        gmapStreetViewService = new google.maps.StreetViewService();
+        gmapGeocoder = new google.maps.Geocoder();
+
+        gmapPanorama = new google.maps.StreetViewPanorama(panoEl, {
+          position: { lat, lng },
+          pov: { heading: state.heading, pitch: 0 },
+          zoom: 1,
+          addressControl: true,
+          linksControl: true,
+          panControl: false,
+          enableCloseButton: false
+        });
+
+        const currentQuery = document.getElementById('location-input').value.trim();
+        if (currentQuery) {
+          searchAndGoToLocation(currentQuery);
+        } else {
+          elLocationStatus.textContent = '📍 台北 101 (真實街景)';
+        }
+      };
+
+      const existingScript = document.getElementById('gmap-script');
+      if (existingScript) existingScript.remove();
+
+      const script = document.createElement('script');
+      script.id = 'gmap-script';
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=initStreetViewPano`;
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+
+    document.getElementById('btn-load-gmap').addEventListener('click', () => {
+      const key = document.getElementById('gmap-api-key').value.trim();
+      if (key) loadGoogleMapsStreetView(key);
+    });
+
+    function advanceGoogleStreetViewNode() {
+      if (!gmapPanorama) return;
+      const now = performance.now();
+      if (now - lastGmapStepAdvance < 700) return;
+      const links = gmapPanorama.getLinks();
+      if (!links || links.length === 0) return;
+
+      let bestLink = null;
+      let minAngleDiff = 360;
+
+      links.forEach((link) => {
+        let diff = Math.abs(((link.heading - state.heading + 540) % 360) - 180);
+        if (diff < minAngleDiff) {
+          minAngleDiff = diff;
+          bestLink = link;
+        }
+      });
+
+      if (bestLink && minAngleDiff <= 75) {
+        lastGmapStepAdvance = now;
+        gmapPanorama.setPano(bestLink.pano);
+      }
+    }
+
+    /*****************************************************************
+     * 6. HAND-SWING STEP & CADENCE TRIGGER LOGIC
+     *****************************************************************/
+    function onHandSwingStep(now) {
+      state.stepTimestamps.push(now);
+      state.stepTimestamps = state.stepTimestamps.filter((t) => now - t < 4000);
+
+      const interval = now - state.lastStepTime;
+      state.lastStepTime = now;
+
+      if (interval >= 160 && interval <= 1400) {
+        state.stepCount++;
+        elStepCount.textContent = state.stepCount;
+
+        if (state.stepTimestamps.length >= 2) {
+          const span = state.stepTimestamps[state.stepTimestamps.length - 1] - state.stepTimestamps[0];
+          const avgInterval = span / (state.stepTimestamps.length - 1);
+          state.spm = Math.round(60000 / avgInterval);
+          elSpmValue.textContent = state.spm;
+        }
+
+        state.rhythmLocked = true;
+        elRhythmStatus.textContent = '🎵 擺手前進中';
+        elRhythmStatus.className = 'status-badge walking';
+        pillWalk.classList.add('on-walk');
+
+        const rad = THREE.MathUtils.degToRad(state.heading);
+        const dirX = Math.sin(rad);
+        const dirZ = -Math.cos(rad);
+
+        if (state.usingGoogleMaps) {
+          if (state.stepCount % 2 === 0) {
+            advanceGoogleStreetViewNode();
+            state.distance += 6;
+          }
+        } else {
+          if (state.moveStyle === 'step') {
+            const stepLen = 2.6;
+            targetCamPos.x += dirX * stepLen;
+            targetCamPos.z += dirZ * stepLen;
+            state.distance += stepLen;
+          } else {
+            const speedBoost = Math.min(11, Math.max(3.8, (state.spm / 100) * 6.0));
+            state.forwardVelocity = speedBoost;
+          }
+        }
+
+        elDistValue.textContent = Math.round(state.distance);
+      }
+    }
+
+    /*****************************************************************
+     * 7. MEDIAPIPE POSE & MOBILE-FRIENDLY WEBCAM STREAM
+     *****************************************************************/
+    const videoElement = document.getElementById('input-video');
+    const poseCanvas = document.getElementById('pose-canvas');
+    const poseCtx = poseCanvas.getContext('2d');
+
+    function onPoseResults(results) {
+      const W = poseCanvas.width;
+      const H = poseCanvas.height;
+
+      poseCtx.save();
+      poseCtx.clearRect(0, 0, W, H);
+      poseCtx.drawImage(results.image, 0, 0, W, H);
+
+      if (!results.poseLandmarks) {
+        poseCtx.restore();
+        return;
+      }
+
+      const lm = results.poseLandmarks;
+      const nose = lm[0];
+      const leftEar = lm[7];
+      const rightEar = lm[8];
+      const leftShoulder = lm[11];
+      const rightShoulder = lm[12];
+      const leftElbow = lm[13];
+      const rightElbow = lm[14];
+      const leftWrist = lm[15];
+      const rightWrist = lm[16];
+      const leftHip = lm[23];
+      const rightHip = lm[24];
+
+      drawConnectors(poseCtx, lm, POSE_CONNECTIONS, { color: 'rgba(56, 189, 248, 0.35)', lineWidth: 2 });
+
+      // A. HEAD YAW DETECTION (轉頭左/右)
+      if (nose && leftEar && rightEar) {
+        const earMidX = (leftEar.x + rightEar.x) / 2;
+        const earSpan = Math.max(0.04, Math.abs(leftEar.x - rightEar.x));
+        const userTurnRatio = (earMidX - nose.x) / (earSpan * 0.5);
+        state.smoothedYaw = state.smoothedYaw * 0.7 + userTurnRatio * 0.3;
+
+        const yawGaugePct = Math.max(4, Math.min(96, 50 + (state.smoothedYaw / 0.7) * 50));
+        yawDot.style.left = `${yawGaugePct}%`;
+
+        if (state.smoothedYaw < -state.turnThreshold) {
+          state.turnDirection = -1;
+          yawDot.style.background = '#f59e0b';
+          yawDebug.textContent = '⬅️ 左轉中';
+          pillLeft.classList.add('on-turn');
+          pillRight.classList.remove('on-turn');
+        } else if (state.smoothedYaw > state.turnThreshold) {
+          state.turnDirection = 1;
+          yawDot.style.background = '#f59e0b';
+          yawDebug.textContent = '右轉中 ➡️';
+          pillRight.classList.add('on-turn');
+          pillLeft.classList.remove('on-turn');
+        } else {
+          state.turnDirection = 0;
+          yawDot.style.background = '#38bdf8';
+          yawDebug.textContent = '轉頭置中';
+          pillLeft.classList.remove('on-turn');
+          pillRight.classList.remove('on-turn');
+        }
+      }
+
+      // B. WAIST ZONE & LEFT/RIGHT HAND SWING DETECTION
+      if (leftShoulder && rightShoulder) {
+        const shoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+        const shoulderSpan = Math.max(0.12, Math.abs(leftShoulder.x - rightShoulder.x));
+
+        const hipsVisible = leftHip && rightHip && (leftHip.visibility > 0.35 || rightHip.visibility > 0.35);
+        const hipY = hipsVisible
+          ? (leftHip.y + rightHip.y) / 2
+          : Math.min(0.92, shoulderY + shoulderSpan * 1.35);
+
+        const torsoHeight = Math.max(0.15, hipY - shoulderY);
+
+        const waistTopY = Math.max(0.2, shoulderY + torsoHeight * 0.22);
+        const waistBottomY = Math.min(0.98, hipY + torsoHeight * 0.38);
+
+        const zoneTopPx = waistTopY * H;
+        const zoneHeightPx = (waistBottomY - waistTopY) * H;
+        poseCtx.fillStyle = 'rgba(34, 197, 94, 0.14)';
+        poseCtx.fillRect(0, zoneTopPx, W, zoneHeightPx);
+        poseCtx.strokeStyle = 'rgba(34, 197, 94, 0.65)';
+        poseCtx.lineWidth = 2;
+        poseCtx.setLineDash([6, 4]);
+        poseCtx.strokeRect(4, zoneTopPx, W - 8, zoneHeightPx);
+        poseCtx.setLineDash([]);
+
+        const lHand = (leftWrist && (leftWrist.visibility > 0.25 || leftWrist.y <= 0.98)) ? leftWrist : leftElbow;
+        const rHand = (rightWrist && (rightWrist.visibility > 0.25 || rightWrist.y <= 0.98)) ? rightWrist : rightElbow;
+
+        const leftInWaist = lHand && lHand.y >= waistTopY && lHand.y <= waistBottomY;
+        const rightInWaist = rHand && rHand.y >= waistTopY && rHand.y <= waistBottomY;
+
+        [
+          { pt: lHand, inZone: leftInWaist },
+          { pt: rHand, inZone: rightInWaist }
+        ].forEach(({ pt, inZone }) => {
+          if (!pt) return;
+          poseCtx.beginPath();
+          poseCtx.arc(pt.x * W, pt.y * H, 10, 0, Math.PI * 2);
+          poseCtx.fillStyle = inZone ? 'rgba(34, 197, 94, 0.85)' : 'rgba(245, 158, 11, 0.75)';
+          poseCtx.fill();
+          poseCtx.lineWidth = 2;
+          poseCtx.strokeStyle = '#ffffff';
+          poseCtx.stroke();
+        });
+
+        if (leftInWaist || rightInWaist) {
+          state.handsInWaistZone = true;
+          elWaistStatus.textContent = leftInWaist && rightInWaist
+            ? '🟢 雙手在腰部區'
+            : '🟢 手部在腰部區';
+          elWaistStatus.className = 'status-badge active';
+
+          const lx = lHand ? lHand.x : 0.5;
+          const ly = lHand ? lHand.y : hipY;
+          const rx = rHand ? rHand.x : 0.5;
+          const ry = rHand ? rHand.y : hipY;
+
+          if (state.leftHandBaseY === null) {
+            state.leftHandBaseY = ly;
+            state.rightHandBaseY = ry;
+            state.leftHandBaseX = lx;
+            state.rightHandBaseX = rx;
+          } else {
+            state.leftHandBaseY = state.leftHandBaseY * 0.92 + ly * 0.08;
+            state.rightHandBaseY = state.rightHandBaseY * 0.92 + ry * 0.08;
+            state.leftHandBaseX = state.leftHandBaseX * 0.92 + lx * 0.08;
+            state.rightHandBaseX = state.rightHandBaseX * 0.92 + rx * 0.08;
+          }
+
+          const dLy = (ly - state.leftHandBaseY) / torsoHeight;
+          const dRy = (ry - state.rightHandBaseY) / torsoHeight;
+          const dLx = (lx - state.leftHandBaseX) / shoulderSpan;
+          const dRx = (rx - state.rightHandBaseX) / shoulderSpan;
+
+          const rawSwing = (dLy - dRy) * 0.85 + (dLx + dRx) * 0.65;
+          state.smoothedSwingSignal = state.smoothedSwingSignal * 0.5 + rawSwing * 0.5;
+
+          const swingPct = Math.max(4, Math.min(96, 50 + (state.smoothedSwingSignal / 0.35) * 50));
+          swayDot.style.left = `${swingPct}%`;
+
+          const now = performance.now();
+
+          if (state.smoothedSwingSignal < -state.handSwingThreshold && state.lastSwingPhase !== -1) {
+            state.lastSwingPhase = -1;
+            swayDot.style.background = '#22c55e';
+            swayDebug.textContent = '左手擺動 🤚';
+            onHandSwingStep(now);
+          } else if (state.smoothedSwingSignal > state.handSwingThreshold && state.lastSwingPhase !== 1) {
+            state.lastSwingPhase = 1;
+            swayDot.style.background = '#22c55e';
+            swayDebug.textContent = '✋ 右手擺動';
+            onHandSwingStep(now);
+          } else if (Math.abs(state.smoothedSwingSignal) < state.handSwingThreshold * 0.7) {
+            swayDot.style.background = '#38bdf8';
+          }
+        } else {
+          state.handsInWaistZone = false;
+          elWaistStatus.textContent = '⚠️ 雙手請放綠框內';
+          elWaistStatus.className = 'status-badge warn';
+          swayDebug.textContent = '未在腰部框內';
+        }
+      }
+
+      poseCtx.restore();
+    }
+
+    const pose = new Pose({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+    });
+
+    pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      enableSegmentation: false,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    pose.onResults(onPoseResults);
+
+    let currentMediaStream = null;
+    let poseLoopActive = false;
+
+    async function startWebcamDetection() {
+      try {
+        if (currentMediaStream) {
+          currentMediaStream.getTracks().forEach((t) => t.stop());
+        }
+
+        const constraints = {
+          audio: false,
+          video: {
+            facingMode: state.facingMode,
+            width: { ideal: 480 },
+            height: { ideal: 360 }
+          }
+        };
+
+        currentMediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = currentMediaStream;
+        await videoElement.play();
+
+        poseCanvas.style.transform = state.facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+        elCamStatus.textContent = '🟢 鏡頭運作中';
+        elCamStatus.className = 'status-badge active';
+
+        if (!poseLoopActive) {
+          poseLoopActive = true;
+          const processFrame = async () => {
+            if (videoElement.readyState >= 2) {
+              await pose.send({ image: videoElement });
+            }
+            requestAnimationFrame(processFrame);
+          };
+          requestAnimationFrame(processFrame);
+        }
+      } catch (err) {
+        elCamStatus.textContent = '🔴 鏡頭需 HTTPS 或權限 (' + err.name + ')';
+        elCamStatus.className = 'status-badge warn';
+      }
+    }
+
+    document.getElementById('btn-switch-cam').addEventListener('click', () => {
+      state.facingMode = state.facingMode === 'user' ? 'environment' : 'user';
+      startWebcamDetection();
+    });
+
+    /*****************************************************************
+     * 8. MAIN ANIMATION LOOP
+     *****************************************************************/
+    let lastFrameTime = performance.now();
+
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.1, (now - lastFrameTime) / 1000);
+      lastFrameTime = now;
+
+      if (state.turnDirection !== 0) {
+        const intensity = Math.min(2.2, Math.abs(state.smoothedYaw) / state.turnThreshold);
+        state.heading = (state.heading + state.turnDirection * state.turnSpeed * intensity * 0.75 + 360) % 360;
+        elHeadingValue.textContent = Math.round(state.heading);
+
+        if (state.usingGoogleMaps && gmapPanorama) {
+          gmapPanorama.setPov({ heading: state.heading, pitch: 0 });
+        }
+      }
+
+      if (state.rhythmLocked && now - state.lastStepTime > 1400) {
+        state.rhythmLocked = false;
+        state.spm = 0;
+        elSpmValue.textContent = '0';
+        elRhythmStatus.textContent = '等待擺手';
+        elRhythmStatus.className = 'status-badge';
+        pillWalk.classList.remove('on-walk');
+        if (state.handsInWaistZone) {
+          swayDebug.textContent = '腰部擺手';
+        }
+      }
+
+      if (!state.usingGoogleMaps) {
+        const rad = THREE.MathUtils.degToRad(state.heading);
+
+        if (state.moveStyle === 'smooth') {
+          if (state.forwardVelocity > 0.05) {
+            const moveStep = state.forwardVelocity * dt;
+            targetCamPos.x += Math.sin(rad) * moveStep;
+            targetCamPos.z += -Math.cos(rad) * moveStep;
+            state.distance += moveStep;
+            elDistValue.textContent = Math.round(state.distance);
+            state.forwardVelocity *= Math.pow(0.22, dt);
+          }
+        }
+
+        camera3D.position.lerp(targetCamPos, 0.12);
+        const bobY = state.rhythmLocked ? Math.sin(now * 0.012) * 0.045 : 0;
+        camera3D.position.y = 1.7 + bobY;
+
+        camera3D.rotation.order = 'YXZ';
+        camera3D.rotation.y = -rad;
+        camera3D.rotation.x = 0;
+
+        renderer.render(scene, camera3D);
+      }
+    }
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
