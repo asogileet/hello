@@ -688,13 +688,13 @@
         </div>
       </div>
 
-      <!-- Access Code (PIN) Section (Same as aibff: 888888) -->
+      <!-- Access Code (PIN) Section -->
       <div id="code-auth-section" class="auth-section hidden">
         <input
           type="password"
           id="input-access-code"
           class="pin-input"
-          placeholder="請輸入存取密碼 (預設: 888888)"
+          placeholder="請輸入存取密碼"
         />
         <button id="btn-verify-code" class="btn-pink">🔑 驗證存取碼並進入</button>
       </div>
@@ -837,6 +837,17 @@
           <button id="btn-clear-gmap-key" title="清除金鑰">清除</button>
         </div>
       </div>
+
+      <div class="api-box">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight: 600; font-size: 0.8rem;">🔒 修改存取密碼 (PIN)</span>
+          <span id="pin-status-badge" class="hint-text">SHA-256 加密保護</span>
+        </div>
+        <div class="btn-row">
+          <input type="password" id="new-pin-input" placeholder="輸入新存取密碼 (至少 4 碼)" style="flex: 1;" />
+          <button id="btn-save-new-pin" class="primary">更新密碼</button>
+        </div>
+      </div>
     </div>
 
     <!-- Right Panel: Webcam Skeleton & Live Gauges -->
@@ -882,7 +893,9 @@
     const AUTH_CONFIG = {
       googleClientId: '18496660775-dcqeoqobfn92ckchjp5mlu11t5a2qp4h.apps.googleusercontent.com',
       allowedEmails: ['edwin.shinsoft@gmail.com'],
-      accessCode: '888888',
+      pinSalt: 'streetview_salt_2026:',
+      defaultPinHash: '67025bc08639f8879dccc4235bf62db69b0166634a1bedb32da053f7ff911ed7',
+      customPinHashKey: 'aibff_streetview_custom_pin_hash',
       storageKey: 'aibff_streetview_auth_user'
     };
 
@@ -1039,16 +1052,46 @@
       setAuthMode(state.authMode === 'google' ? 'code' : 'google');
     });
 
-    function handlePinLogin() {
+    async function computeSaltedPinHash(pinText) {
+      const msgBuffer = new TextEncoder().encode(AUTH_CONFIG.pinSalt + pinText);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    let pinFailedAttempts = 0;
+    let pinLockUntil = 0;
+
+    async function handlePinLogin() {
+      const now = Date.now();
+      if (now < pinLockUntil) {
+        const waitSec = Math.ceil((pinLockUntil - now) / 1000);
+        showLoginStatus(`嘗試次數過多，請等待 ${waitSec} 秒後再試。`, 'err');
+        return;
+      }
+
       const code = document.getElementById('input-access-code').value.trim();
       if (!code) {
         showLoginStatus('請輸入存取密碼。', 'err');
         return;
       }
-      if (code !== AUTH_CONFIG.accessCode) {
-        showLoginStatus('存取碼錯誤，請重新輸入。', 'err');
+
+      const inputHash = await computeSaltedPinHash(code);
+      const activeHash = localStorage.getItem(AUTH_CONFIG.customPinHashKey) || AUTH_CONFIG.defaultPinHash;
+
+      if (inputHash !== activeHash) {
+        pinFailedAttempts++;
+        if (pinFailedAttempts >= 5) {
+          pinLockUntil = Date.now() + 60000;
+          pinFailedAttempts = 0;
+          showLoginStatus('⚠️ 連續錯誤 5 次，已安全鎖定 60 秒！', 'err');
+        } else {
+          showLoginStatus(`存取密碼錯誤（剩餘 ${5 - pinFailedAttempts} 次機會）。`, 'err');
+        }
         return;
       }
+
+      pinFailedAttempts = 0;
       showLoginStatus('🎉 驗證成功，歡迎光臨！', 'ok');
       setTimeout(() => {
         completeLogin({
@@ -1062,6 +1105,27 @@
     document.getElementById('btn-verify-code').addEventListener('click', handlePinLogin);
     document.getElementById('input-access-code').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') handlePinLogin();
+    });
+
+    // Update Custom PIN inside Settings Panel
+    const pinStatusBadge = document.getElementById('pin-status-badge');
+    if (localStorage.getItem(AUTH_CONFIG.customPinHashKey)) {
+      pinStatusBadge.textContent = '🟢 已設定自訂密碼';
+      pinStatusBadge.style.color = '#4ade80';
+    }
+
+    document.getElementById('btn-save-new-pin').addEventListener('click', async () => {
+      const newPin = document.getElementById('new-pin-input').value.trim();
+      if (!newPin || newPin.length < 4) {
+        alert('請輸入至少 4 碼的新存取密碼！');
+        return;
+      }
+      const newHash = await computeSaltedPinHash(newPin);
+      localStorage.setItem(AUTH_CONFIG.customPinHashKey, newHash);
+      document.getElementById('new-pin-input').value = '';
+      pinStatusBadge.textContent = '🟢 已更新自訂密碼';
+      pinStatusBadge.style.color = '#4ade80';
+      alert('存取密碼已加密更新完成！');
     });
 
     document.getElementById('btn-logout').addEventListener('click', () => {
