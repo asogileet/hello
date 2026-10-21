@@ -44,10 +44,10 @@
       user-select: none;
     }
 
-    /* Hide Google Maps keyless developer watermark/modal overlays automatically
-       and counter-invert the WebGL canvas so keyless Street View displays 100% natural colors! */
-    #gmap-pano canvas,
-    .widget-scene-canvas {
+    /* Hide Google Maps keyless developer watermark/modal overlays automatically.
+       Only counter-invert the WebGL canvas when in keyless mode (.keyless-mode) */
+    #gmap-pano.keyless-mode canvas,
+    #gmap-pano.keyless-mode .widget-scene-canvas {
       filter: invert(1) !important;
     }
 
@@ -825,6 +825,18 @@
         </label>
         <input type="range" id="slider-turn-speed" min="0.5" max="4.0" step="0.1" value="1.6" />
       </div>
+
+      <div class="api-box">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight: 600; font-size: 0.8rem;">🔑 Google Maps API Key (選填)</span>
+          <span id="gmap-key-badge" class="hint-text">免金鑰模式</span>
+        </div>
+        <div class="btn-row">
+          <input type="password" id="gmap-api-key" placeholder="貼上 AIzaSy... 金鑰" style="flex: 1;" />
+          <button id="btn-save-gmap-key" class="primary">套用</button>
+          <button id="btn-clear-gmap-key" title="清除金鑰">清除</button>
+        </div>
+      </div>
     </div>
 
     <!-- Right Panel: Webcam Skeleton & Live Gauges -->
@@ -1194,6 +1206,7 @@
              el.textContent.includes('僅供開發'))
           ) {
             el.style.display = 'none';
+            gmapPanoEl.classList.add('keyless-mode');
             if (el.parentElement && el.parentElement !== gmapPanoEl) {
               el.parentElement.style.background = 'transparent';
             }
@@ -1203,8 +1216,40 @@
     });
     watermarkObserver.observe(document.body, { childList: true, subtree: true });
 
+    const gmapKeyInput = document.getElementById('gmap-api-key');
+    const gmapKeyBadge = document.getElementById('gmap-key-badge');
+    const savedGmapKey = localStorage.getItem('GMAP_STREETVIEW_KEY') || '';
+    if (savedGmapKey) {
+      gmapKeyInput.value = savedGmapKey;
+      gmapKeyBadge.textContent = '🟢 已套用金鑰';
+      gmapKeyBadge.style.color = '#4ade80';
+    }
+
+    document.getElementById('btn-save-gmap-key').addEventListener('click', () => {
+      const val = gmapKeyInput.value.trim();
+      if (val) {
+        localStorage.setItem('GMAP_STREETVIEW_KEY', val);
+      } else {
+        localStorage.removeItem('GMAP_STREETVIEW_KEY');
+      }
+      window.location.reload();
+    });
+
+    document.getElementById('btn-clear-gmap-key').addEventListener('click', () => {
+      localStorage.removeItem('GMAP_STREETVIEW_KEY');
+      gmapKeyInput.value = '';
+      window.location.reload();
+    });
+
     function initKeylessGoogleStreetView(lat = 25.0339, lng = 121.5623) {
       if (gmapPanorama) return;
+
+      const apiKey = (localStorage.getItem('GMAP_STREETVIEW_KEY') || '').trim();
+      if (!apiKey) {
+        gmapPanoEl.classList.add('keyless-mode');
+      } else {
+        gmapPanoEl.classList.remove('keyless-mode');
+      }
 
       window.onGoogleMapsReady = () => {
         gmapStreetViewService = new google.maps.StreetViewService();
@@ -1225,7 +1270,8 @@
       if (!document.getElementById('gmap-keyless-script')) {
         const script = document.createElement('script');
         script.id = 'gmap-keyless-script';
-        script.src = 'https://maps.googleapis.com/maps/api/js?callback=onGoogleMapsReady';
+        const keyParam = apiKey ? `key=${encodeURIComponent(apiKey)}&` : '';
+        script.src = `https://maps.googleapis.com/maps/api/js?${keyParam}callback=onGoogleMapsReady`;
         script.async = true;
         script.defer = true;
         document.head.appendChild(script);
