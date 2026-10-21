@@ -1406,20 +1406,59 @@
       }
     }
 
-    function teleportToCoordinates(lat, lng, labelName) {
+    async function snapToNearestRoad(lat, lng) {
+      try {
+        const res = await fetch(
+          `https://router.project-osrm.org/nearest/v1/driving/${lng},${lat}?number=1`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (
+            data &&
+            data.waypoints &&
+            data.waypoints.length > 0 &&
+            data.waypoints[0].location &&
+            (data.waypoints[0].distance === undefined || data.waypoints[0].distance < 200)
+          ) {
+            return {
+              lng: data.waypoints[0].location[0],
+              lat: data.waypoints[0].location[1]
+            };
+          }
+        }
+      } catch (_) {}
+      return { lat, lng };
+    }
+
+    async function teleportToCoordinates(lat, lng, labelName) {
+      elLocationStatus.textContent = `📍 定位「${labelName}」道路街景中...`;
+
+      // Snap building/address coordinates to the nearest street centerline so Street View always loads
+      const snapped = await snapToNearestRoad(lat, lng);
+      const targetLat = snapped.lat;
+      const targetLng = snapped.lng;
+
       elLocationStatus.textContent = `📍 ${labelName}`;
 
-      if (gmapPanorama && gmapStreetViewService) {
-        gmapStreetViewService.getPanorama(
-          { location: { lat, lng }, radius: 500, source: google.maps.StreetViewSource.OUTDOOR },
-          (data, status) => {
-            if (status === 'OK' && data && data.location) {
-              gmapPanorama.setPano(data.location.pano);
-            } else {
-              gmapPanorama.setPosition({ lat, lng });
+      if (gmapPanorama) {
+        // Immediately move Street View position to the snapped road coordinate
+        gmapPanorama.setPosition({ lat: targetLat, lng: targetLng });
+
+        // Also query StreetViewService in case nearest outdoor panorama is slightly further along the road
+        if (gmapStreetViewService) {
+          gmapStreetViewService.getPanorama(
+            {
+              location: { lat: targetLat, lng: targetLng },
+              radius: 300,
+              source: google.maps.StreetViewSource.OUTDOOR
+            },
+            (data, status) => {
+              if (status === 'OK' && data && data.location && data.location.pano) {
+                gmapPanorama.setPano(data.location.pano);
+              }
             }
-          }
-        );
+          );
+        }
       }
 
       // Also update 3D fallback camera
@@ -1434,10 +1473,30 @@
 
       const coordMatch = q.match(/^(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)$/);
       if (coordMatch) {
-        teleportToCoordinates(parseFloat(coordMatch[1]), parseFloat(coordMatch[3]), q);
+        await teleportToCoordinates(parseFloat(coordMatch[1]), parseFloat(coordMatch[3]), q);
         return;
       }
 
+      // 1. Primary Geocoder: ArcGIS World Geocoder (supports Taiwan doorplate addresses & landmarks!)
+      try {
+        const arcUrl =
+          `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates` +
+          `?f=json&maxLocations=1&SingleLine=${encodeURIComponent(q)}`;
+        const arcRes = await fetch(arcUrl);
+        if (arcRes.ok) {
+          const arcData = await arcRes.json();
+          if (arcData && arcData.candidates && arcData.candidates.length > 0) {
+            const cand = arcData.candidates[0];
+            if (cand.location && cand.location.y && cand.location.x) {
+              const shortLabel = (cand.address || q).split(',')[0];
+              await teleportToCoordinates(cand.location.y, cand.location.x, shortLabel);
+              return;
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 2. Fallback Geocoder: OpenStreetMap Nominatim
       try {
         const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
         const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW,zh;q=0.9' } });
@@ -1446,13 +1505,12 @@
           const lat = parseFloat(data[0].lat);
           const lng = parseFloat(data[0].lon);
           const shortName = data[0].display_name.split(',')[0] || q;
-          teleportToCoordinates(lat, lng, shortName);
-        } else {
-          elLocationStatus.textContent = `⚠️ 找不到「${q}」`;
+          await teleportToCoordinates(lat, lng, shortName);
+          return;
         }
-      } catch (err) {
-        elLocationStatus.textContent = `⚠️ 搜尋失敗`;
-      }
+      } catch (_) {}
+
+      elLocationStatus.textContent = `⚠️ 找不到「${q}」`;
     }
 
     document.getElementById('btn-search-location').addEventListener('click', () => {
