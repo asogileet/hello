@@ -988,7 +988,7 @@
       }
     }
 
-    function completeLogin(userObj) {
+    async function completeLogin(userObj) {
       state.loggedInUser = userObj;
       localStorage.setItem(AUTH_CONFIG.storageKey, JSON.stringify(userObj));
       authOverlay.classList.add('hidden');
@@ -999,6 +999,21 @@
         userAvatar.style.display = 'block';
       } else {
         userAvatar.style.display = 'none';
+      }
+
+      // Ensure backend session token is always synced even for restored sessions
+      if (userObj && userObj.email) {
+        try {
+          const res = await fetch('/hello/api/google_session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: userObj.email })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.token) localStorage.setItem(AUTH_CONFIG.tokenKey, data.token);
+          }
+        } catch (_) {}
       }
 
       // Automatically initialize Real Google Street View & Camera right after login!
@@ -1141,20 +1156,22 @@
         return;
       }
       const token = localStorage.getItem(AUTH_CONFIG.tokenKey) || '';
+      const email = (state.loggedInUser && state.loggedInUser.email) || AUTH_CONFIG.allowedEmails[0];
       try {
         const res = await fetch('/hello/api/change_pin', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token, new_pin: newPin })
+          body: JSON.stringify({ token, email, new_pin: newPin })
         });
         const data = await res.json();
         if (res.ok && data.ok) {
+          if (data.token) localStorage.setItem(AUTH_CONFIG.tokenKey, data.token);
           document.getElementById('new-pin-input').value = '';
           pinStatusBadge.textContent = '🟢 密碼已更新';
           pinStatusBadge.style.color = '#4ade80';
           alert(data.message);
         } else {
-          alert(data.message || '更新失敗，請重新登入後再試。');
+          alert(data.message || '更新失敗');
         }
       } catch (e) {
         alert('連線伺服器失敗');
@@ -1163,11 +1180,12 @@
 
     document.getElementById('btn-unban-ips').addEventListener('click', async () => {
       const token = localStorage.getItem(AUTH_CONFIG.tokenKey) || '';
+      const email = (state.loggedInUser && state.loggedInUser.email) || AUTH_CONFIG.allowedEmails[0];
       try {
         const res = await fetch('/hello/api/unban_all', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token })
+          body: JSON.stringify({ token, email })
         });
         const data = await res.json();
         alert(data.message || '已執行解封');

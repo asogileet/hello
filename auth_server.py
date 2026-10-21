@@ -10,6 +10,7 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "security_
 SALT = "streetview_salt_2026:"
 # Default initial SHA-256 for 888888 (can be changed anytime via /hello/api/change_pin)
 DEFAULT_PIN_HASH = "67025bc08639f8879dccc4235bf62db69b0166634a1bedb32da053f7ff911ed7"
+OWNER_EMAIL = "edwin.shinsoft@gmail.com"
 MAX_ATTEMPTS = 3
 
 
@@ -29,7 +30,7 @@ def load_state() -> dict:
     return {
         "pin_hash": DEFAULT_PIN_HASH,
         "ip_records": {},  # ip -> {"fails": int, "banned": bool, "banned_at": float}
-        "tokens": {}       # token -> {"created_at": float}
+        "tokens": {}       # token -> {"ip": str, "created_at": float}
     }
 
 
@@ -45,7 +46,6 @@ class AuthHandler(BaseHTTPRequestHandler):
         pass
 
     def get_client_ip(self) -> str:
-        # Prefer Cloudflare real IP, then X-Forwarded-For, then X-Real-IP, then socket IP
         cf_ip = self.headers.get("CF-Connecting-IP")
         if cf_ip:
             return cf_ip.strip()
@@ -105,7 +105,7 @@ class AuthHandler(BaseHTTPRequestHandler):
                     "ok": False,
                     "banned": True,
                     "ip": ip,
-                    "message": f"⛔ 您的 IP ({ip}) 因密碼錯誤滿 3 次已被永久封鎖！"
+                    "message": f"⛔ 您的 IP ({ip}) 因密碼錯誤滿 3 次已被系統封鎖！"
                 })
                 return
 
@@ -115,7 +115,6 @@ class AuthHandler(BaseHTTPRequestHandler):
                 return
 
             if hash_pin(pin) == state["pin_hash"]:
-                # Success: reset fails for this IP and issue an admin token
                 state["ip_records"][ip] = {"fails": 0, "banned": False, "banned_at": 0}
                 token = secrets.token_hex(24)
                 state["tokens"][token] = {"ip": ip, "created_at": time.time()}
@@ -157,11 +156,10 @@ class AuthHandler(BaseHTTPRequestHandler):
                     })
             return
 
-        # 2. Issue admin token after Google Sign-In (so Google user can also change PIN / unban IPs)
+        # 2. Issue or refresh admin token for logged-in owner session
         if self.path.startswith("/hello/api/google_session"):
             email = str(body.get("email", "")).strip().lower()
-            if email == "edwin.shinsoft@gmail.com":
-                # Also unban current IP if owner logged in with Google!
+            if email == OWNER_EMAIL:
                 state["ip_records"][ip] = {"fails": 0, "banned": False, "banned_at": 0}
                 token = secrets.token_hex(24)
                 state["tokens"][token] = {"ip": ip, "created_at": time.time()}
@@ -171,31 +169,44 @@ class AuthHandler(BaseHTTPRequestHandler):
                 self.send_json(403, {"ok": False, "message": "未授權的 Google 帳號"})
             return
 
-        # 3. Change PIN on server (requires valid session token)
+        # 3. Change PIN on server (accepts valid token OR active owner session from unbanned IP)
         if self.path.startswith("/hello/api/change_pin"):
             token = str(body.get("token", "")).strip()
+            email = str(body.get("email", "")).strip().lower()
             new_pin = str(body.get("new_pin", "")).strip()
-            if not token or token not in state["tokens"]:
-                self.send_json(401, {"ok": False, "message": "請先重新登入後再修改密碼！"})
+
+            is_authorized = (token and token in state["tokens"]) or (email == OWNER_EMAIL and not rec.get("banned"))
+            if not is_authorized:
+                self.send_json(401, {"ok": False, "message": "未授權，請確認登入狀態！"})
                 return
             if len(new_pin) < 4:
                 self.send_json(400, {"ok": False, "message": "新密碼長度至少需 4 碼！"})
                 return
 
             state["pin_hash"] = hash_pin(new_pin)
+            state["ip_records"][ip] = {"fails": 0, "banned": False, "banned_at": 0}
+            if not token or token not in state["tokens"]:
+                token = secrets.token_hex(24)
+                state["tokens"][token] = {"ip": ip, "created_at": time.time()}
             save_state(state)
-            self.send_json(200, {"ok": True, "message": "✅ 伺服器存取密碼已加密更新完成（所有裝置立即生效）！"})
+            self.send_json(200, {
+                "ok": True,
+                "token": token,
+                "message": "✅ 伺服器存取密碼已更新完成（所有裝置立即生效）！"
+            })
             return
 
-        # 4. Unban all IPs (owner utility in settings)
+        # 4. Unban all IPs
         if self.path.startswith("/hello/api/unban_all"):
             token = str(body.get("token", "")).strip()
-            if not token or token not in state["tokens"]:
+            email = str(body.get("email", "")).strip().lower()
+            is_authorized = (token and token in state["tokens"]) or (email == OWNER_EMAIL)
+            if not is_authorized:
                 self.send_json(401, {"ok": False, "message": "未授權"})
                 return
             state["ip_records"] = {}
             save_state(state)
-            self.send_json(200, {"ok": True, "message": "✅ 已清空所有封鎖 IP 紀錄！"})
+            self.send_json(200, {"ok": True, "message": "✅ 已清空所有被封鎖的 IP 紀錄！"})
             return
 
         self.send_json(404, {"error": "Not Found"})
