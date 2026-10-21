@@ -721,8 +721,8 @@
           <div class="brand-title">
             <span>🏃‍♂️ 體感街景</span>
             <span id="cam-status" class="status-badge">等待登入啟動...</span>
-            <span id="waist-status" class="status-badge">雙手置於腰部框</span>
-            <span id="rhythm-status" class="status-badge">等待擺手</span>
+            <span id="waist-status" class="status-badge">等待偵測手部</span>
+            <span id="rhythm-status" class="status-badge">手有動即前進</span>
           </div>
 
           <!-- Logged-in Google User Info -->
@@ -804,10 +804,10 @@
 
       <div class="control-group">
         <label>
-          <span>腰部擺手觸發門檻 (越小越靈敏)</span>
-          <span id="val-sway-thresh">0.08</span>
+          <span>手部動作靈敏度門檻 (越小越容易走)</span>
+          <span id="val-sway-thresh">0.012</span>
         </label>
-        <input type="range" id="slider-sway-thresh" min="0.02" max="0.25" step="0.01" value="0.08" />
+        <input type="range" id="slider-sway-thresh" min="0.004" max="0.060" step="0.002" value="0.012" />
       </div>
 
       <div class="control-group">
@@ -856,7 +856,7 @@
       <div class="video-wrap">
         <video id="input-video" playsinline muted autoplay></video>
         <canvas id="pose-canvas" width="480" height="360"></canvas>
-        <div class="cam-overlay-tip">綠框＝腰部偵測區（雙手在綠框內擺動前進）</div>
+        <div class="cam-overlay-tip">鏡頭看到手部（手腕/手掌/手臂）晃動即前進！</div>
       </div>
 
       <div class="gauge-section">
@@ -874,13 +874,13 @@
 
         <div class="gauge-row">
           <div class="gauge-header">
-            <span>左手 🤚</span>
-            <span id="sway-debug">腰部擺手</span>
-            <span>✋ 右手</span>
+            <span>靜止</span>
+            <span id="sway-debug">👋 手部動作量</span>
+            <span>前進 🏃</span>
           </div>
           <div class="gauge-track">
-            <div id="sway-deadzone-bar" class="gauge-deadzone" style="left: 36%; right: 36%;"></div>
-            <div id="sway-dot" class="gauge-dot" style="left: 50%;"></div>
+            <div id="sway-deadzone-bar" class="gauge-deadzone" style="left: 0%; right: 80%;"></div>
+            <div id="sway-dot" class="gauge-dot" style="left: 6%;"></div>
           </div>
         </div>
       </div>
@@ -910,20 +910,16 @@
       moveStyle: 'step',
       usingGoogleMaps: true, // Default directly to Real Google Street View!
 
-      handSwingThreshold: 0.08,
+      handSwingThreshold: 0.012,
       turnThreshold: 0.22,
       turnSpeed: 1.6,
 
       smoothedYaw: 0,
       turnDirection: 0,
 
-      handsInWaistZone: false,
-      leftHandBaseY: null,
-      rightHandBaseY: null,
-      leftHandBaseX: null,
-      rightHandBaseX: null,
-      smoothedSwingSignal: 0,
-      lastSwingPhase: 0,
+      prevHandCoords: {},
+      handMotionEnergy: 0,
+      lastMoveTriggerTime: 0,
       stepTimestamps: [],
       rhythmLocked: false,
       lastStepTime: 0,
@@ -1268,14 +1264,14 @@
       yawDeadzoneBar.style.left = `${50 - yawPct}%`;
       yawDeadzoneBar.style.right = `${50 - yawPct}%`;
 
-      const swayPct = Math.min(45, (state.handSwingThreshold / 0.35) * 50);
-      swayDeadzoneBar.style.left = `${50 - swayPct}%`;
-      swayDeadzoneBar.style.right = `${50 - swayPct}%`;
+      const threshPct = Math.min(90, (state.handSwingThreshold / 0.06) * 100);
+      swayDeadzoneBar.style.left = '0%';
+      swayDeadzoneBar.style.right = `${100 - threshPct}%`;
     }
 
     sliderSway.addEventListener('input', (e) => {
       state.handSwingThreshold = parseFloat(e.target.value);
-      document.getElementById('val-sway-thresh').textContent = state.handSwingThreshold.toFixed(2);
+      document.getElementById('val-sway-thresh').textContent = state.handSwingThreshold.toFixed(3);
       updateDeadzoneVisuals();
     });
 
@@ -1559,58 +1555,60 @@
     });
 
     /*****************************************************************
-     * 6. HAND-SWING STEP & CADENCE TRIGGER LOGIC
+     * 6. INSTANT HAND-MOTION FORWARD TRIGGER LOGIC
      *****************************************************************/
     function onHandSwingStep(now) {
+      if (now - state.lastStepTime < 350) return; // Smooth step cooldown (max ~3 steps/sec)
+      state.lastStepTime = now;
+
       state.stepTimestamps.push(now);
       state.stepTimestamps = state.stepTimestamps.filter((t) => now - t < 4000);
 
-      const interval = now - state.lastStepTime;
-      state.lastStepTime = now;
+      state.stepCount++;
+      elStepCount.textContent = state.stepCount;
 
-      if (interval >= 160 && interval <= 1400) {
-        state.stepCount++;
-        elStepCount.textContent = state.stepCount;
-
-        if (state.stepTimestamps.length >= 2) {
-          const span = state.stepTimestamps[state.stepTimestamps.length - 1] - state.stepTimestamps[0];
-          const avgInterval = span / (state.stepTimestamps.length - 1);
-          state.spm = Math.round(60000 / avgInterval);
-          elSpmValue.textContent = state.spm;
-        }
-
-        state.rhythmLocked = true;
-        elRhythmStatus.textContent = '🎵 擺手前進中';
-        elRhythmStatus.className = 'status-badge walking';
-        pillWalk.classList.add('on-walk');
-
-        const rad = THREE.MathUtils.degToRad(state.heading);
-        const dirX = Math.sin(rad);
-        const dirZ = -Math.cos(rad);
-
-        if (state.usingGoogleMaps) {
-          // Advance Street View panorama node every 2 hand swings
-          if (state.stepCount % 2 === 0) {
-            advanceGoogleStreetViewNode();
-            state.distance += 6;
-          }
-        } else {
-          const stepLen = 2.8;
-          targetCamPos.x += dirX * stepLen;
-          targetCamPos.z += dirZ * stepLen;
-          state.distance += stepLen;
-        }
-
-        elDistValue.textContent = Math.round(state.distance);
+      if (state.stepTimestamps.length >= 2) {
+        const span = state.stepTimestamps[state.stepTimestamps.length - 1] - state.stepTimestamps[0];
+        const avgInterval = span / (state.stepTimestamps.length - 1);
+        state.spm = Math.round(60000 / avgInterval);
+        elSpmValue.textContent = state.spm;
+      } else {
+        state.spm = 90;
+        elSpmValue.textContent = state.spm;
       }
+
+      state.rhythmLocked = true;
+      elRhythmStatus.textContent = '🏃 手部動作・前進中';
+      elRhythmStatus.className = 'status-badge walking';
+      pillWalk.classList.add('on-walk');
+
+      const rad = THREE.MathUtils.degToRad(state.heading);
+      const dirX = Math.sin(rad);
+      const dirZ = -Math.cos(rad);
+
+      if (state.usingGoogleMaps) {
+        // Immediately advance Street View panorama node whenever hand moves!
+        advanceGoogleStreetViewNode();
+        state.distance += 5;
+      } else {
+        const stepLen = 3.2;
+        targetCamPos.x += dirX * stepLen;
+        targetCamPos.z += dirZ * stepLen;
+        state.distance += stepLen;
+      }
+
+      elDistValue.textContent = Math.round(state.distance);
     }
 
     /*****************************************************************
-     * 7. MEDIAPIPE POSE & WEBCAM STREAM
+     * 7. MEDIAPIPE POSE & WEBCAM STREAM (ANY HAND MOTION = MOVE)
      *****************************************************************/
     const videoElement = document.getElementById('input-video');
     const poseCanvas = document.getElementById('pose-canvas');
     const poseCtx = poseCanvas.getContext('2d');
+
+    // Landmarks for hands, wrists, fingers, and elbows
+    const HAND_LANDMARK_IDS = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
     function onPoseResults(results) {
       const W = poseCanvas.width;
@@ -1629,14 +1627,6 @@
       const nose = lm[0];
       const leftEar = lm[7];
       const rightEar = lm[8];
-      const leftShoulder = lm[11];
-      const rightShoulder = lm[12];
-      const leftElbow = lm[13];
-      const rightElbow = lm[14];
-      const leftWrist = lm[15];
-      const rightWrist = lm[16];
-      const leftHip = lm[23];
-      const rightHip = lm[24];
 
       drawConnectors(poseCtx, lm, POSE_CONNECTIONS, { color: 'rgba(56, 189, 248, 0.35)', lineWidth: 2 });
 
@@ -1671,106 +1661,67 @@
         }
       }
 
-      // B. WAIST ZONE & LEFT/RIGHT HAND SWING DETECTION
-      if (leftShoulder && rightShoulder) {
-        const shoulderY = (leftShoulder.y + rightShoulder.y) / 2;
-        const shoulderSpan = Math.max(0.12, Math.abs(leftShoulder.x - rightShoulder.x));
+      // B. ANY HAND / ARM MOTION DETECTION (只要看到手有動就前進)
+      let visibleHandCount = 0;
+      let maxHandDelta = 0;
 
-        const hipsVisible = leftHip && rightHip && (leftHip.visibility > 0.35 || rightHip.visibility > 0.35);
-        const hipY = hipsVisible
-          ? (leftHip.y + rightHip.y) / 2
-          : Math.min(0.92, shoulderY + shoulderSpan * 1.35);
+      HAND_LANDMARK_IDS.forEach((idx) => {
+        const pt = lm[idx];
+        if (!pt) return;
+        const inFrame = pt.x >= 0.01 && pt.x <= 0.99 && pt.y >= 0.01 && pt.y <= 0.99;
+        const visOk = (pt.visibility === undefined || pt.visibility > 0.15);
 
-        const torsoHeight = Math.max(0.15, hipY - shoulderY);
-        const waistTopY = Math.max(0.2, shoulderY + torsoHeight * 0.22);
-        const waistBottomY = Math.min(0.98, hipY + torsoHeight * 0.38);
-
-        const zoneTopPx = waistTopY * H;
-        const zoneHeightPx = (waistBottomY - waistTopY) * H;
-        poseCtx.fillStyle = 'rgba(34, 197, 94, 0.14)';
-        poseCtx.fillRect(0, zoneTopPx, W, zoneHeightPx);
-        poseCtx.strokeStyle = 'rgba(34, 197, 94, 0.65)';
-        poseCtx.lineWidth = 2;
-        poseCtx.setLineDash([6, 4]);
-        poseCtx.strokeRect(4, zoneTopPx, W - 8, zoneHeightPx);
-        poseCtx.setLineDash([]);
-
-        const lHand = (leftWrist && (leftWrist.visibility > 0.25 || leftWrist.y <= 0.98)) ? leftWrist : leftElbow;
-        const rHand = (rightWrist && (rightWrist.visibility > 0.25 || rightWrist.y <= 0.98)) ? rightWrist : rightElbow;
-
-        const leftInWaist = lHand && lHand.y >= waistTopY && lHand.y <= waistBottomY;
-        const rightInWaist = rHand && rHand.y >= waistTopY && rHand.y <= waistBottomY;
-
-        [
-          { pt: lHand, inZone: leftInWaist },
-          { pt: rHand, inZone: rightInWaist }
-        ].forEach(({ pt, inZone }) => {
-          if (!pt) return;
-          poseCtx.beginPath();
-          poseCtx.arc(pt.x * W, pt.y * H, 10, 0, Math.PI * 2);
-          poseCtx.fillStyle = inZone ? 'rgba(34, 197, 94, 0.85)' : 'rgba(245, 158, 11, 0.75)';
-          poseCtx.fill();
-          poseCtx.lineWidth = 2;
-          poseCtx.strokeStyle = '#ffffff';
-          poseCtx.stroke();
-        });
-
-        if (leftInWaist || rightInWaist) {
-          state.handsInWaistZone = true;
-          elWaistStatus.textContent = leftInWaist && rightInWaist
-            ? '🟢 雙手在腰部區'
-            : '🟢 手部在腰部區';
-          elWaistStatus.className = 'status-badge active';
-
-          const lx = lHand ? lHand.x : 0.5;
-          const ly = lHand ? lHand.y : hipY;
-          const rx = rHand ? rHand.x : 0.5;
-          const ry = rHand ? rHand.y : hipY;
-
-          if (state.leftHandBaseY === null) {
-            state.leftHandBaseY = ly;
-            state.rightHandBaseY = ry;
-            state.leftHandBaseX = lx;
-            state.rightHandBaseX = rx;
-          } else {
-            state.leftHandBaseY = state.leftHandBaseY * 0.92 + ly * 0.08;
-            state.rightHandBaseY = state.rightHandBaseY * 0.92 + ry * 0.08;
-            state.leftHandBaseX = state.leftHandBaseX * 0.92 + lx * 0.08;
-            state.rightHandBaseX = state.rightHandBaseX * 0.92 + rx * 0.08;
+        if (inFrame && visOk) {
+          visibleHandCount++;
+          const prev = state.prevHandCoords[idx];
+          if (prev) {
+            const delta = Math.hypot(pt.x - prev.x, pt.y - prev.y);
+            if (delta > maxHandDelta) {
+              maxHandDelta = delta;
+            }
           }
+          state.prevHandCoords[idx] = { x: pt.x, y: pt.y };
 
-          const dLy = (ly - state.leftHandBaseY) / torsoHeight;
-          const dRy = (ry - state.rightHandBaseY) / torsoHeight;
-          const dLx = (lx - state.leftHandBaseX) / shoulderSpan;
-          const dRx = (rx - state.rightHandBaseX) / shoulderSpan;
-
-          const rawSwing = (dLy - dRy) * 0.85 + (dLx + dRx) * 0.65;
-          state.smoothedSwingSignal = state.smoothedSwingSignal * 0.5 + rawSwing * 0.5;
-
-          const swingPct = Math.max(4, Math.min(96, 50 + (state.smoothedSwingSignal / 0.35) * 50));
-          swayDot.style.left = `${swingPct}%`;
-
-          const now = performance.now();
-
-          if (state.smoothedSwingSignal < -state.handSwingThreshold && state.lastSwingPhase !== -1) {
-            state.lastSwingPhase = -1;
-            swayDot.style.background = '#22c55e';
-            swayDebug.textContent = '左手擺動 🤚';
-            onHandSwingStep(now);
-          } else if (state.smoothedSwingSignal > state.handSwingThreshold && state.lastSwingPhase !== 1) {
-            state.lastSwingPhase = 1;
-            swayDot.style.background = '#22c55e';
-            swayDebug.textContent = '✋ 右手擺動';
-            onHandSwingStep(now);
-          } else if (Math.abs(state.smoothedSwingSignal) < state.handSwingThreshold * 0.7) {
-            swayDot.style.background = '#38bdf8';
+          // Highlight wrists (15, 16), index fingers (19, 20), and elbows (13, 14)
+          if (idx === 15 || idx === 16 || idx === 19 || idx === 20 || idx === 13 || idx === 14) {
+            poseCtx.beginPath();
+            poseCtx.arc(pt.x * W, pt.y * H, idx >= 15 ? 9 : 6, 0, Math.PI * 2);
+            poseCtx.fillStyle = maxHandDelta >= state.handSwingThreshold
+              ? 'rgba(34, 197, 94, 0.9)'
+              : 'rgba(56, 189, 248, 0.8)';
+            poseCtx.fill();
+            poseCtx.lineWidth = 2;
+            poseCtx.strokeStyle = '#ffffff';
+            poseCtx.stroke();
           }
         } else {
-          state.handsInWaistZone = false;
-          elWaistStatus.textContent = '⚠️ 雙手請放綠框內';
-          elWaistStatus.className = 'status-badge warn';
-          swayDebug.textContent = '未在腰部框內';
+          delete state.prevHandCoords[idx];
         }
+      });
+
+      if (visibleHandCount > 0) {
+        elWaistStatus.textContent = '🟢 已偵測到手部';
+        elWaistStatus.className = 'status-badge active';
+
+        state.handMotionEnergy = state.handMotionEnergy * 0.4 + maxHandDelta * 0.6;
+        const motionPct = Math.max(4, Math.min(96, (state.handMotionEnergy / 0.06) * 100));
+        swayDot.style.left = `${motionPct}%`;
+
+        if (state.handMotionEnergy >= state.handSwingThreshold) {
+          swayDot.style.background = '#22c55e';
+          swayDebug.textContent = '👋 手部移動中・前進！';
+          onHandSwingStep(performance.now());
+        } else {
+          swayDot.style.background = '#38bdf8';
+          swayDebug.textContent = '👋 動動手即可前進';
+        }
+      } else {
+        state.handMotionEnergy = 0;
+        swayDot.style.left = '4%';
+        swayDot.style.background = '#94a3b8';
+        elWaistStatus.textContent = '👀 請讓手進入鏡頭畫面';
+        elWaistStatus.className = 'status-badge warn';
+        swayDebug.textContent = '鏡頭內未見手部';
       }
 
       poseCtx.restore();
