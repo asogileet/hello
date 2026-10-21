@@ -840,12 +840,13 @@
 
       <div class="api-box">
         <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-weight: 600; font-size: 0.8rem;">🔒 修改存取密碼 (PIN)</span>
-          <span id="pin-status-badge" class="hint-text">SHA-256 加密保護</span>
+          <span style="font-weight: 600; font-size: 0.8rem;">🔒 修改存取密碼 (錯3次鎖IP)</span>
+          <span id="pin-status-badge" class="hint-text">伺服器防護中</span>
         </div>
         <div class="btn-row">
-          <input type="password" id="new-pin-input" placeholder="輸入新存取密碼 (至少 4 碼)" style="flex: 1;" />
+          <input type="password" id="new-pin-input" placeholder="輸入新密碼 (至少 4 碼)" style="flex: 1;" />
           <button id="btn-save-new-pin" class="primary">更新密碼</button>
+          <button id="btn-unban-ips" title="清空被封鎖的 IP 紀錄">解封IP</button>
         </div>
       </div>
     </div>
@@ -893,9 +894,7 @@
     const AUTH_CONFIG = {
       googleClientId: '18496660775-dcqeoqobfn92ckchjp5mlu11t5a2qp4h.apps.googleusercontent.com',
       allowedEmails: ['edwin.shinsoft@gmail.com'],
-      pinSalt: 'streetview_salt_2026:',
-      defaultPinHash: '67025bc08639f8879dccc4235bf62db69b0166634a1bedb32da053f7ff911ed7',
-      customPinHashKey: 'aibff_streetview_custom_pin_hash',
+      tokenKey: 'aibff_streetview_auth_token',
       storageKey: 'aibff_streetview_auth_user'
     };
 
@@ -1007,7 +1006,7 @@
       startWebcamDetection();
     }
 
-    function handleGoogleCredentialResponse(response) {
+    async function handleGoogleCredentialResponse(response) {
       showLoginStatus('驗證 Google 登入中，請稍候...', 'info');
       const payload = decodeJwtPayload(response.credential);
       if (!payload || !payload.email) {
@@ -1022,6 +1021,18 @@
         showLoginStatus(`帳號 ${payload.email} 不在授權白名單內！`, 'err');
         return;
       }
+
+      try {
+        const res = await fetch('/hello/api/google_session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: payload.email })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.token) localStorage.setItem(AUTH_CONFIG.tokenKey, data.token);
+        }
+      } catch (_) {}
 
       showLoginStatus(`🎉 歡迎回來，${payload.name || payload.email}！`, 'ok');
       setTimeout(() => {
@@ -1052,54 +1063,67 @@
       setAuthMode(state.authMode === 'google' ? 'code' : 'google');
     });
 
-    async function computeSaltedPinHash(pinText) {
-      const msgBuffer = new TextEncoder().encode(AUTH_CONFIG.pinSalt + pinText);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+    function lockPinUiForBannedIp(msg) {
+      const inputEl = document.getElementById('input-access-code');
+      const btnEl = document.getElementById('btn-verify-code');
+      inputEl.disabled = true;
+      inputEl.placeholder = '⛔ 此 IP 已被系統封鎖';
+      btnEl.disabled = true;
+      btnEl.style.opacity = '0.45';
+      btnEl.style.cursor = 'not-allowed';
+      showLoginStatus(msg, 'err');
     }
 
-    let pinFailedAttempts = 0;
-    let pinLockUntil = 0;
+    async function checkIpBanStatus() {
+      try {
+        const res = await fetch('/hello/api/status');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.banned) {
+            lockPinUiForBannedIp(`⛔ 您的 IP (${data.ip}) 因密碼錯誤滿 3 次已被封鎖！`);
+          }
+        }
+      } catch (_) {}
+    }
 
     async function handlePinLogin() {
-      const now = Date.now();
-      if (now < pinLockUntil) {
-        const waitSec = Math.ceil((pinLockUntil - now) / 1000);
-        showLoginStatus(`嘗試次數過多，請等待 ${waitSec} 秒後再試。`, 'err');
-        return;
-      }
-
       const code = document.getElementById('input-access-code').value.trim();
       if (!code) {
         showLoginStatus('請輸入存取密碼。', 'err');
         return;
       }
 
-      const inputHash = await computeSaltedPinHash(code);
-      const activeHash = localStorage.getItem(AUTH_CONFIG.customPinHashKey) || AUTH_CONFIG.defaultPinHash;
-
-      if (inputHash !== activeHash) {
-        pinFailedAttempts++;
-        if (pinFailedAttempts >= 5) {
-          pinLockUntil = Date.now() + 60000;
-          pinFailedAttempts = 0;
-          showLoginStatus('⚠️ 連續錯誤 5 次，已安全鎖定 60 秒！', 'err');
-        } else {
-          showLoginStatus(`存取密碼錯誤（剩餘 ${5 - pinFailedAttempts} 次機會）。`, 'err');
-        }
-        return;
-      }
-
-      pinFailedAttempts = 0;
-      showLoginStatus('🎉 驗證成功，歡迎光臨！', 'ok');
-      setTimeout(() => {
-        completeLogin({
-          name: '主人',
-          email: AUTH_CONFIG.allowedEmails[0],
-          picture: ''
+      try {
+        const res = await fetch('/hello/api/verify_pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: code })
         });
-      }, 400);
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          if (data.banned) {
+            lockPinUiForBannedIp(data.message || '⛔ 您的 IP 已被封鎖！');
+          } else {
+            showLoginStatus(data.message || '存取密碼錯誤。', 'err');
+          }
+          return;
+        }
+
+        if (data.token) {
+          localStorage.setItem(AUTH_CONFIG.tokenKey, data.token);
+        }
+        showLoginStatus(data.message || '🎉 驗證成功，歡迎光臨！', 'ok');
+        setTimeout(() => {
+          completeLogin({
+            name: '主人',
+            email: AUTH_CONFIG.allowedEmails[0],
+            picture: ''
+          });
+        }, 400);
+      } catch (err) {
+        showLoginStatus('⚠️ 無法連線驗證伺服器，請稍後再試。', 'err');
+      }
     }
 
     document.getElementById('btn-verify-code').addEventListener('click', handlePinLogin);
@@ -1107,12 +1131,8 @@
       if (e.key === 'Enter') handlePinLogin();
     });
 
-    // Update Custom PIN inside Settings Panel
+    // Update Server-Side PIN & Unban IPs inside Settings Panel
     const pinStatusBadge = document.getElementById('pin-status-badge');
-    if (localStorage.getItem(AUTH_CONFIG.customPinHashKey)) {
-      pinStatusBadge.textContent = '🟢 已設定自訂密碼';
-      pinStatusBadge.style.color = '#4ade80';
-    }
 
     document.getElementById('btn-save-new-pin').addEventListener('click', async () => {
       const newPin = document.getElementById('new-pin-input').value.trim();
@@ -1120,12 +1140,40 @@
         alert('請輸入至少 4 碼的新存取密碼！');
         return;
       }
-      const newHash = await computeSaltedPinHash(newPin);
-      localStorage.setItem(AUTH_CONFIG.customPinHashKey, newHash);
-      document.getElementById('new-pin-input').value = '';
-      pinStatusBadge.textContent = '🟢 已更新自訂密碼';
-      pinStatusBadge.style.color = '#4ade80';
-      alert('存取密碼已加密更新完成！');
+      const token = localStorage.getItem(AUTH_CONFIG.tokenKey) || '';
+      try {
+        const res = await fetch('/hello/api/change_pin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, new_pin: newPin })
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          document.getElementById('new-pin-input').value = '';
+          pinStatusBadge.textContent = '🟢 密碼已更新';
+          pinStatusBadge.style.color = '#4ade80';
+          alert(data.message);
+        } else {
+          alert(data.message || '更新失敗，請重新登入後再試。');
+        }
+      } catch (e) {
+        alert('連線伺服器失敗');
+      }
+    });
+
+    document.getElementById('btn-unban-ips').addEventListener('click', async () => {
+      const token = localStorage.getItem(AUTH_CONFIG.tokenKey) || '';
+      try {
+        const res = await fetch('/hello/api/unban_all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const data = await res.json();
+        alert(data.message || '已執行解封');
+      } catch (e) {
+        alert('連線伺服器失敗');
+      }
     });
 
     document.getElementById('btn-logout').addEventListener('click', () => {
@@ -1161,6 +1209,7 @@
     }
 
     window.addEventListener('load', () => {
+      checkIpBanStatus();
       const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
       const isHttps = window.location.protocol === 'https:';
       if (!isLocalhost && !isHttps) {
